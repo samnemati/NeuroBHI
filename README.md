@@ -1,61 +1,125 @@
 # NeuroBHI
 
-A pipeline for computing regional Brain Age Gaps (BAGs) from ROI-level brain age gap values and evaluating their association with behavioral measures via stepwise regression.
+A pipeline for computing regional Brain Age Gaps (BAGs) from volBrain regional volumes and evaluating their association with behavioral measures via stepwise regression.
 
 ---
 
 ## Overview
 
-The pipeline consists of two scripts that run sequentially:
+The pipeline consists of three scripts that run sequentially:
 
 ```
-ROI-level BAGs + volBrain volumes
+volBrain regional volumes (Excel)
+            │
+            ▼
+ [MATLAB] BHI_ROI_brainage_calculation_from_ROIVol.m
+            │  Auto-detect TIV and region columns
+            │  TIV-normalize volumes
+            │  Leave-One-Out ridge regression per subject × region
+            │  Predict brain age; compute BAG and proportional BAG
+            ▼
+ volBrain_Regional_BrainAge.xlsx
+ volBrain_ROI_BrainAgeGaps.xlsx
+ volBrain_Regional_PropBrainAgeGaps.xlsx
             │
             ▼
  [MATLAB] BHI_compute_regionalBAG_from_roiBAG.m
-            │  Fuzzy-match ROI names → volume columns
-            │  Aggregate into anatomical / functional groups
-            │  Compute simple mean + volume-weighted mean BAG
+            │  Fuzzy-match ROI names → volBrain volume columns
+            │  Aggregate ROIs into anatomical / functional groups
+            │  Compute simple mean + volume-weighted mean BAG per group
             ▼
  Regional_BAGs_weighted_v2.xlsx
             │
             ▼
  [Python] stepwise_BAG_behavioral.py
             │  Merge regional BAGs with behavioral scores
-            │  Bidirectional stepwise OLS per region
-            │  Age always included as fixed covariate
+            │  Bidirectional stepwise OLS per region (Age fixed)
             ▼
  Stepwise_BAG_Behavioral_Results.xlsx
 ```
 
 ---
 
-## Script 1 — `BHI_compute_regionalBAG_from_roiBAG.m` (MATLAB)
+## Script 1 — `BHI_ROI_brainage_calculation_from_ROIVol.m` (MATLAB)
 
 ### What it does
 
-1. **Loads** two Excel files: per-ROI BAG scores (one column per brain region, one row per subject) and volBrain regional volumes (in cm³).
-2. **Fuzzy-matches** each ROI-BAG column name to its corresponding volume column by tokenizing names (lowercasing, expanding abbreviations like `L`→`left`, `WM`→`white matter`), scoring token overlap + hemisphere-match bonus − edit-distance penalty, and selecting the best match per ROI. Falls back to normalized Levenshtein distance when no token overlap is found.
-3. **Saves** the ROI → volume column mapping to Excel so you can inspect and manually correct any wrong matches before trusting the weighted BAGs.
-4. **Groups** ROIs by token matching into:
+Estimates a **predicted brain age** for every subject in every brain region using a Leave-One-Out (LOO) ridge-regularized linear regression trained on healthy controls.
+
+1. **Loads** a volBrain Excel file containing regional volumes (cm³), chronological age, and a `UseForEstimation` flag.
+2. **Auto-detects TIV** (Total Intracranial Volume) — first looks for a column containing "intracranial" or "(IC)"; falls back to `Brain(WM+GM) + CSF`.
+3. **Auto-detects region columns** — any column whose name contains both "volume" and "cm3".
+4. **TIV-normalizes** all volumes (divides by TIV) so brain age reflects relative regional proportions rather than absolute sizes.
+5. **Leave-One-Out regression** per subject × per region:
+   - Removes the subject from the control pool if they are a control.
+   - Fits `Age ~ TIV-normalized volume` on the remaining controls using OLS; switches to ridge regularization (λ = 0.001) when the design matrix is ill-conditioned or underdetermined.
+   - Predicts the subject's brain age from their own normalized volume.
+   - Computes an **atrophy score** = mean Z-score of the subject's volumes relative to controls.
+6. **Computes Brain Age Gap (BAG)** = predicted age − chronological age, and **Proportional BAG** = BAG / chronological age.
+7. **Saves** three output Excel files and generates box plots for visual inspection.
+
+### Inputs
+
+| Column | Description |
+|---|---|
+| `subject_ID` | Subject identifier (required for labelled output) |
+| `Age` | Chronological age in years |
+| `UseForEstimation` | `"Within Range"` = control, `"Outside Range"` = test |
+| TIV column | Auto-detected (intracranial cavity or WM+GM+CSF) |
+| `<Region> volume cm3` | One column per brain region (auto-detected) |
+
+### Outputs
+
+| File | Sheet | Contents |
+|---|---|---|
+| `volBrain_Regional_BrainAge.xlsx` | `Brain_Age` | Predicted brain age [nSubjects × nRegions] |
+| `volBrain_ROI_BrainAgeGaps.xlsx` | `Brain_Age_Gap` | BAG = predicted − chronological age |
+| `volBrain_Regional_PropBrainAgeGaps.xlsx` | `Prop_Brain_Age_Gap` | Proportional BAG = BAG / chronological age |
+
+Box plots are saved as `Brain_age.png`, `Brain_age_gap.png`, `Brain_age_gap_PBA.png`.
+
+### Requirements
+
+- MATLAB R2019b or later
+- No toolboxes required
+
+### Usage
+
+1. Set `datafile` in the USER CONFIGURATION section.
+2. Run the script.
+3. Check console diagnostics: TIV column detected, number of regions, LOO progress.
+4. Inspect the three output Excel files. Feed `volBrain_ROI_BrainAgeGaps.xlsx` into Script 2.
+
+---
+
+## Script 2 — `BHI_compute_regionalBAG_from_roiBAG.m` (MATLAB)
+
+### What it does
+
+Aggregates ROI-level BAG values (from Script 1) into anatomical lobe groups and functional network groups, weighted by regional brain volume.
+
+1. **Loads** the ROI-BAG table (output of Script 1) and the volBrain volume table.
+2. **Fuzzy-matches** each ROI-BAG column name to its corresponding volume column by tokenizing names (lowercasing, expanding abbreviations like `L`→`left`, `WM`→`white matter`), scoring by token overlap + hemisphere-match bonus − edit-distance penalty, and selecting the best match per ROI. Falls back to normalized Levenshtein distance when no token overlap is found.
+3. **Saves** the ROI → volume column mapping to Excel for inspection and manual correction.
+4. **Groups** ROIs into:
    - **Anatomical groups**: Frontal, Temporal, Parietal, Occipital × Left, Right (8 groups)
    - **Functional network groups**: DomainGeneral, LanguageSpecific, CinguloOpercular × Left, Right (6 groups)
-5. **Computes** both a simple (unweighted) mean BAG and a volume-weighted mean BAG per group per subject. When volume data are missing for an individual ROI, the group mean volume is imputed; when all volumes are missing, the simple mean is used as fallback.
+5. **Computes** both a simple (unweighted) mean BAG and a volume-weighted mean BAG per group per subject. Missing ROI volumes are imputed with the group mean; if all volumes are missing, falls back to simple mean.
 6. **Saves** all results to a single multi-sheet Excel file.
 
 ### Inputs
 
 | Variable | Description |
 |---|---|
-| `roiBAG_file` | Excel file with columns `[subject_ID, <ROI>_BAG, ...]` — one row per subject |
-| `volumes_file` | volBrain output Excel with `"volume cm3"` columns per region; must contain `subject_ID` |
+| `roiBAG_file` | ROI-BAG Excel file (`volBrain_ROI_BrainAgeGaps.xlsx` from Script 1) |
+| `volumes_file` | volBrain volume Excel file (same as Script 1 input); must contain `subject_ID` |
 
 ### Outputs
 
 | File | Sheet | Contents |
 |---|---|---|
-| `ROI_to_Vol_Mapping.xlsx` | — | Every ROI-BAG column, its matched volume column, match score, and edit distance. **Inspect this before proceeding.** |
-| `Regional_BAGs_weighted_v2.xlsx` | `RegionalBAGs_mean` | Simple (unweighted) mean BAG per anatomical/functional group |
+| `ROI_to_Vol_Mapping.xlsx` | — | ROI-BAG column → matched volume column, match score, edit distance. **Inspect before use.** |
+| `Regional_BAGs_weighted_v2.xlsx` | `RegionalBAGs_mean` | Simple mean BAG per group |
 | | `RegionalBAGs_weighted` | Volume-weighted mean BAG per group |
 | | `ROI_to_Vol_Mapping` | Copy of the mapping table |
 
@@ -74,14 +138,14 @@ ROI-level BAGs + volBrain volumes
 
 ### Usage
 
-1. Set the four file paths at the top of the script (`roiBAG_file`, `volumes_file`, `output_mapping_file`, `output_weighted_file`).
+1. Set the four file paths in the USER CONFIGURATION section.
 2. Run the script.
-3. Open `ROI_to_Vol_Mapping.xlsx` and verify matches — correct any mismatches manually in the mapping sheet if needed.
-4. Proceed to the Python script using the `RegionalBAGs_weighted` sheet as input.
+3. Open `ROI_to_Vol_Mapping.xlsx` and verify matches — correct any mismatches manually.
+4. Use `Regional_BAGs_weighted_v2.xlsx` (weighted sheet) as input to Script 3.
 
 ---
 
-## Script 2 — `stepwise_BAG_behavioral.py` (Python)
+## Script 3 — `stepwise_BAG_behavioral.py` (Python)
 
 ### What it does
 
@@ -99,7 +163,7 @@ For each region:
 
 | File | Description |
 |---|---|
-| `ABC_RegBAG_Clcalc_weightedVol.xlsx` | Regional BAG file — output of the MATLAB script (weighted sheet) |
+| `ABC_RegBAG_Clcalc_weightedVol.xlsx` | Regional BAG file — weighted sheet from Script 2 |
 | `Behavioral_Data_Cleaned.xlsx` | Cleaned behavioral scores; must contain `subject_ID` and `Age` |
 
 Tables are merged on `subject_ID`. Listwise deletion is applied — subjects missing any predictor or outcome are excluded.
@@ -112,21 +176,21 @@ Tables are merged on `subject_ID`. Listwise deletion is applied — subjects mis
 
 | Parameter | Value |
 |---|---|
-| Entry threshold (p-enter) | p < 0.05 |
-| Removal threshold (p-remove) | p > 0.10 |
+| Entry threshold | p < 0.05 |
+| Removal threshold | p > 0.10 |
 | Fixed covariate | Age (always retained, never removed) |
-| Missing data | Listwise deletion |
+| Missing data handling | Listwise deletion |
 
 ### Outputs
 
-All results are written to `Stepwise_BAG_Behavioral_Results.xlsx`:
+All results written to `Stepwise_BAG_Behavioral_Results.xlsx`:
 
 | Sheet | Contents |
 |---|---|
-| `Summary` | One row per region: N, R², Adj-R², F-statistic, F p-value, number of selected predictors, selected predictor names |
-| `<Region>` | Full coefficient table for that region's final model: predictor, coefficient, SE, t-value, p-value, 95% CI |
-| `Final_Model_Residuals` | Residuals from the final model (Age + selected predictors) per subject per region |
-| `Age_Corrected_Residuals` | Residuals from the age-only model (age-partialled BAG) per subject per region |
+| `Summary` | One row per region: N, R², Adj-R², F-statistic, F p-value, number and names of selected predictors |
+| `<Region>` | Full coefficient table: predictor, coefficient, SE, t-value, p-value, 95% CI |
+| `Final_Model_Residuals` | Residuals from the final model (Age + selected predictors) per subject |
+| `Age_Corrected_Residuals` | Residuals from the age-only model (age-partialled BAG) per subject |
 
 ### Requirements
 
@@ -137,7 +201,6 @@ statsmodels
 openpyxl
 ```
 
-Install with:
 ```bash
 pip install pandas numpy statsmodels openpyxl
 ```
@@ -148,7 +211,7 @@ pip install pandas numpy statsmodels openpyxl
 python stepwise_BAG_behavioral.py
 ```
 
-Ensure both input Excel files are in the same directory as the script, or update the file paths in the configuration section at the top.
+Ensure both input Excel files are in the same directory, or update the file paths in the configuration section at the top.
 
 ---
 
@@ -156,8 +219,9 @@ Ensure both input Excel files are in the same directory as the script, or update
 
 ```
 NeuroBHI/
-├── BHI_compute_regionalBAG_from_roiBAG.m   # MATLAB: ROI-BAG → weighted regional BAG
-├── stepwise_BAG_behavioral.py              # Python: stepwise regression → behavioral associations
+├── BHI_ROI_brainage_calculation_from_ROIVol.m   # MATLAB: volBrain volumes → per-ROI brain age & BAG
+├── BHI_compute_regionalBAG_from_roiBAG.m        # MATLAB: per-ROI BAGs → weighted regional BAGs
+├── stepwise_BAG_behavioral.py                   # Python: regional BAGs → behavioral associations
 └── README.md
 ```
 
