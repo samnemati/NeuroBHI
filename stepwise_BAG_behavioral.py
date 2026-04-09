@@ -45,7 +45,7 @@ OUTPUT_FILE = "Stepwise_BAG_Behavioral_Results.xlsx"
 
 # ── 1. Load data ──────────────────────────────────────────────────────────────
 print("Loading data ...")
-bag = pd.read_excel("ABC_RegBAG_Clcalc_weightedVol.xlsx")
+bag = pd.read_excel("./Results/BHI_Regional_BrainAgeGap.xlsx")
 beh = pd.read_excel("Behavioral_Data_Cleaned.xlsx")
 
 # ── 2. Merge on subject_ID ────────────────────────────────────────────────────
@@ -53,8 +53,8 @@ df = bag.merge(beh, on="subject_ID", suffixes=("_bag", "_beh"))
 
 # ── 3. Define regions and behavioral predictors ───────────────────────────────
 regions = [
-    "Language_Specific", "Domain_General", "Frontal", "Temporal",
-    "Parietal", "Occipital", "Subcortical", "Cerebellum", "Limbic",
+    "LanguageSpecific_Left", "LanguageSpecific_Right", "DomainGeneral_Left", "DomainGeneral_Right", "Frontal_Left", "Frontal_Right", "Temporal_Left",
+    "Temporal_Right", "Parietal_Left", "Parietal_Right", "Occipital_Left", "Occipital_Right"
 ]
 
 # Exclude non-predictor columns from the behavioral candidate list
