@@ -58,7 +58,7 @@ regions = [
 ]
 
 # Exclude non-predictor columns from the behavioral candidate list
-non_predictor_cols = {"subject_ID", "Age_bag", "Age_beh", "Age_normalized"} | set(regions)
+non_predictor_cols = {"subject_ID", "Age_bag", "Age_beh", "Age_normalized", "BrainAgeR_Global"} | set(regions)
 behavioral_predictors = [c for c in df.columns if c not in non_predictor_cols]
 
 # Coerce behavioral columns to numeric (handles object-dtype Excel artefacts)
