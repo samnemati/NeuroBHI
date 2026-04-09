@@ -1,6 +1,6 @@
 # NeuroBHI
 
-A pipeline for computing regional Brain Age Gaps (BAGs) from ROI-level brain age estimates and evaluating their association with behavioral measures via stepwise regression.
+A pipeline for computing regional Brain Age Gaps (BAGs) from ROI-level brain age gap values and evaluating their association with behavioral measures via stepwise regression.
 
 ---
 
