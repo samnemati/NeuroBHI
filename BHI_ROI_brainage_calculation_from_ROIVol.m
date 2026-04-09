@@ -102,10 +102,10 @@ output_BAG_file      = '/Users/snemati/Documents/ABC_BrainAge/Output/NeuroBHI/BH
 %  SECTION 1 : Load and merge data
 %  -------------------------------------------------------------------------
 fprintf('Loading volBrain volumes: %s\n', volumes_file);
-tblVol     = readtable(volumes_file, 'Sheet', 'Sheet1');
+tblVol = readtable(volumes_file, 'Sheet', 'Sheet1', 'VariableNamingRule', 'preserve');
 
 fprintf('Loading BrainAgeR estimates: %s\n', brainager_file);
-tblBrainAgeR = readtable(brainager_file);
+tblBrainAgeR = readtable(brainager_file, 'VariableNamingRule', 'preserve');
 
 % Merge on subject_ID (volumes) / Subject_ID (BrainAgeR)
 fprintf('Merging tables on subject_ID...\n');
