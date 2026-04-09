@@ -6,6 +6,7 @@ __pycache__/
 # Microsoft Office Files
 *.docx
 *.xlsx
+*.pptx
 
 # C extensions
 *.so
