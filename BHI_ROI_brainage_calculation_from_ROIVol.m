@@ -2,9 +2,6 @@
 %
 % DESCRIPTION
 % -----------
-% Replicates the regional brain age estimation method of Busby et al. (2024):
-%   "Regional brain aging: premature aging of the domain general system
-%    predicts aphasia severity." Communications Biology, 7:718.
 %
 % For each brain region group (Domain-General, Language-Specific, Frontal,
 % Temporal, Parietal, Occipital) × hemisphere (Left, Right):
@@ -24,9 +21,8 @@
 %   Busby group definitions as closely as possible (see ROI DEFINITIONS).
 % • Participants: all neurotypical (no stroke lesions). All ROIs in each
 %   group are used for every subject (no lesion masking needed).
-% • Within-range criterion: "Use for estimation == Within Range", defined
-%   by MoCA score threshold (not BrainAgeR ±5%), appropriate for a
-%   neurotypical sample.
+% • Within-range criterion: BrainAgeR estimate within ±5% of chronological
+%   age, exactly as in Busby et al. (n=81 of 304 subjects).
 % • LOO applied for within-range controls so that brain age can be estimated
 %   for all subjects (Busby et al. could not estimate for within-range
 %   controls as there was no LOO; here LOO solves that limitation).
@@ -97,8 +93,9 @@ clear; clc; close all;
 %  =========================================================================
 volumes_file   = '/Users/snemati/Documents/ABC_BrainAge/Output/BrainAge/ABC_Baseline_Regional_VolBrain_Volumes.xlsx';
 brainager_file = '/Users/snemati/Documents/ABC_BrainAge/Output/NeuroBHI/ABC_Global_BrainAgeR.xlsx';
-output_brainAge_file = 'BHI_Regional_BrainAge.xlsx';
-output_BAG_file      = 'BHI_Regional_BrainAgeGap.xlsx';
+output_brainAge_file = '/Users/snemati/Documents/ABC_BrainAge/Output/NeuroBHI/BHI_Regional_BrainAge.xlsx';
+output_BAG_file      = '/Users/snemati/Documents/ABC_BrainAge/Output/NeuroBHI/BHI_Regional_BrainAgeGap.xlsx';
+
 %  =========================================================================
 
 %% -------------------------------------------------------------------------
@@ -130,14 +127,21 @@ fprintf('Subjects with BrainAgeR estimates: %d\n', height(tblVol));
 %% -------------------------------------------------------------------------
 %  SECTION 2 : Identify control groups and TIV
 %  -------------------------------------------------------------------------
-% Within-range controls (MoCA-based criterion): used to train the model
-% Outside-range: predicted using the full within-range training model (no LOO)
-isWithinRange  = strcmp(tblVol.("Use for estimation"), 'Within Range');
-isOutsideRange = strcmp(tblVol.("Use for estimation"), 'Outside range');
+% Within-range criterion (Busby et al. 2024):
+%   A subject is within-range if their BrainAgeR global estimate is within
+%   ±5% of their chronological age:
+%       abs(BrainAgeR - Age) / Age <= 0.05
+%   These subjects form the normative training set for the regional models.
+%   All remaining subjects are outside-range and are predicted from the
+%   full within-range model (no LOO).
+
+pctDiff       = abs(tblVol.BrainAgeR_estimated - tblVol.Age) ./ tblVol.Age;
+isWithinRange = pctDiff <= 0.05;   % Busby ±5% criterion
+isOutsideRange = ~isWithinRange;
 
 nWithin  = sum(isWithinRange);
 nOutside = sum(isOutsideRange);
-fprintf('Within-range controls: %d\n', nWithin);
+fprintf('Within-range controls (BrainAgeR within +/-5%% of chronological age): %d\n', nWithin);
 fprintf('Outside-range subjects: %d\n', nOutside);
 
 % TIV (Intracranial Cavity volume)
