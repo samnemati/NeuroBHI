@@ -149,15 +149,22 @@ Aggregates ROI-level BAG values (from Script 1) into anatomical lobe groups and 
 
 ### What it does
 
-Runs a **bidirectional stepwise OLS regression** for each brain region, modeling the volume-weighted regional BAG as a function of behavioral scores, with Age always retained as a fixed covariate.
+Runs a **two-stage regression** for each brain region to isolate the behavioral contribution to BAG independently of age.
 
-For each region:
-1. Fits an **age-only model** and saves its residuals (age-partialled BAG).
-2. Runs **bidirectional stepwise selection** over all behavioral predictors:
+**Why two stages?**
+BAG is strongly negatively correlated with chronological age (a known regression-to-the-mean artifact in brain age studies). Including Age as a single covariate in one model controls for it statistically, but Age dominates R² and makes the overall fit appear artificially high (R² ~ 0.94–0.999). The two-stage approach first removes age variance entirely, then asks: *how much do behavioral factors explain of what remains?* The R² reported is purely behavioral.
+
+**Stage 1 — Age correction (per region):**
+1. Fit `BAG ~ Age` (OLS).
+2. Save residuals = age-partialled BAG (the outcome for Stage 2).
+
+**Stage 2 — Behavioral stepwise (per region):**
+1. Run bidirectional stepwise OLS on the Stage 1 residuals. Age is NOT re-entered — it was already removed.
    - **Forward step**: adds the candidate with the lowest p-value if p < 0.05.
-   - **Backward step**: removes any currently-selected predictor if its p-value exceeds 0.10.
+   - **Backward step**: removes any selected predictor if its p-value exceeds 0.10.
    - Repeats until no predictor is added or removed.
-3. Fits the **final model** (Age + selected predictors) and saves its residuals and coefficient table.
+2. Fit the final model on the selected behavioral predictors.
+3. Report R² — this is the variance explained by behavioral factors alone, above and beyond age.
 
 ### Inputs
 
@@ -178,8 +185,8 @@ Tables are merged on `subject_ID`. Listwise deletion is applied — subjects mis
 |---|---|
 | Entry threshold | p < 0.05 |
 | Removal threshold | p > 0.10 |
-| Fixed covariate | Age (always retained, never removed) |
-| Missing data handling | Listwise deletion |
+| Age handling | Regressed out in Stage 1; not re-entered in Stage 2 |
+| Missing data | Listwise deletion |
 
 ### Outputs
 
@@ -187,10 +194,15 @@ All results written to `Stepwise_BAG_Behavioral_Results.xlsx`:
 
 | Sheet | Contents |
 |---|---|
-| `Summary` | One row per region: N, R², Adj-R², F-statistic, F p-value, number and names of selected predictors |
-| `<Region>` | Full coefficient table: predictor, coefficient, SE, t-value, p-value, 95% CI |
-| `Final_Model_Residuals` | Residuals from the final model (Age + selected predictors) per subject |
-| `Age_Corrected_Residuals` | Residuals from the age-only model (age-partialled BAG) per subject |
+| `Summary` | One row per region: N, Stage 1 Age-R², Stage 2 Behavioral R², Adj-R², F-statistic, F p-value, number and names of selected predictors |
+| `<Region>` | Full coefficient table for Stage 2: predictor, coefficient, SE, t-value, p-value, 95% CI |
+| `Age_Corrected_Residuals` | Stage 1 residuals (age-partialled BAG) — the outcome used in Stage 2 |
+| `Stage2_Model_Residuals` | Stage 2 residuals (unexplained after both age and behavioral predictors) |
+
+### Interpreting the Summary sheet
+
+- **Stage1_Age_R2**: how much variance in BAG is due to age alone (expected to be high: 0.83–0.999).
+- **Stage2_Behavioral_R2**: how much of the *remaining, age-independent* BAG variance is explained by behavioral predictors. This is the number to report and interpret.
 
 ### Requirements
 
