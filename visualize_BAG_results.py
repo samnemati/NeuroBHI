@@ -315,62 +315,87 @@ fig.savefig(os.path.join(OUT_DIR, "Fig4_BAG_Distributions.pdf"), bbox_inches="ti
 plt.close(fig)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# FIGURE 5 — Top-predictor scatter plots for the 4 most informative regions
+# FIGURE 5 — Top-predictor scatter plots for ALL regions (3 cols × 4 rows)
+# Regions with no model selected get a "no predictors selected" placeholder
 # ═══════════════════════════════════════════════════════════════════════════════
-print("Generating Fig 5: Top predictor scatter plots ...")
-
-# Pick regions by highest Stage2 R² (excluding Frontal_Left which has no model)
-summary_sorted = summary[summary["Stage2_Behavioral_R2"] > 0].sort_values(
-    "Stage2_Behavioral_R2", ascending=False)
-top_regions = summary_sorted["Region"].head(4).tolist()
+print("Generating Fig 5: Top predictor scatter plots (all regions) ...")
 
 # Load behavioral data and merge with age-corrected residuals
 beh = pd.read_excel(BEH_FILE)
 df_scatter = age_resid.merge(beh, on="subject_ID", how="inner")
 
-fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+n_cols = 3
+n_rows = int(np.ceil(len(REGION_ORDER) / n_cols))   # 4 rows for 12 regions
+fig, axes = plt.subplots(n_rows, n_cols, figsize=(14, n_rows * 3.8))
 axes = axes.flatten()
 
-for ax, region in zip(axes, top_regions):
-    # Top predictor = first entry in coef table (highest |coef| after stepwise)
-    top_pred = coef_data[region].index[0]
-    coef_val = coef_data[region].loc[top_pred, "Coefficient"]
+for ax, region in zip(axes, REGION_ORDER):
+    hemi_color = PALETTE["left"] if region.endswith("_Left") else PALETTE["right"]
 
-    y_col = region
-    x_col = top_pred
-
-    if x_col not in df_scatter.columns or y_col not in df_scatter.columns:
-        ax.text(0.5, 0.5, f"Data not found\n{x_col}", ha="center", va="center",
-                transform=ax.transAxes, fontsize=8)
+    # Regions with no model (no predictors selected)
+    if len(coef_data[region]) == 0:
+        ax.set_facecolor("#f7f7f7")
+        ax.text(0.5, 0.5, "No predictors selected",
+                ha="center", va="center", transform=ax.transAxes,
+                fontsize=9, color="#969696", style="italic")
+        ax.set_title(SHORT_LABELS[region], fontsize=9, pad=6, color="#969696")
+        ax.set_xticks([])
+        ax.set_yticks([])
         continue
 
-    plot_df = df_scatter[[x_col, y_col]].dropna()
-    x = pd.to_numeric(plot_df[x_col], errors="coerce")
-    y = pd.to_numeric(plot_df[y_col], errors="coerce")
-    mask = x.notna() & y.notna()
-    x, y = x[mask], y[mask]
+    # Top predictor = predictor with largest |coefficient| in the final model
+    top_pred = coef_data[region]["Coefficient"].abs().idxmax()
+    coef_val = coef_data[region].loc[top_pred, "Coefficient"]
+
+    if top_pred not in df_scatter.columns or region not in df_scatter.columns:
+        ax.text(0.5, 0.5, f"Data not found:\n{top_pred}",
+                ha="center", va="center", transform=ax.transAxes, fontsize=8)
+        ax.set_title(SHORT_LABELS[region], fontsize=9)
+        continue
+
+    plot_df = df_scatter[[top_pred, region]].copy()
+    plot_df[top_pred] = pd.to_numeric(plot_df[top_pred], errors="coerce")
+    plot_df = plot_df.dropna()
+    x = plot_df[top_pred].values
+    y = plot_df[region].values
 
     r_val, p_val = stats.pearsonr(x, y)
 
-    hemi_color = PALETTE["left"] if region.endswith("_Left") else PALETTE["right"]
-
-    ax.scatter(x, y, s=18, alpha=0.45, color=hemi_color, linewidths=0)
+    ax.scatter(x, y, s=16, alpha=0.4, color=hemi_color, linewidths=0)
 
     # Regression line
     m, b = np.polyfit(x, y, 1)
     x_line = np.linspace(x.min(), x.max(), 100)
-    ax.plot(x_line, m * x_line + b, color="#333333", linewidth=1.5)
+    ax.plot(x_line, m * x_line + b, color="#222222", linewidth=1.5)
 
-    direction = "↑ BAG" if coef_val > 0 else "↓ BAG"
-    ax.set_title(f"{SHORT_LABELS[region]}\nTop predictor: {top_pred}  ({direction})",
-                 fontsize=9, pad=6)
-    ax.set_xlabel(top_pred, fontsize=8)
-    ax.set_ylabel("Age-corrected BAG (years)", fontsize=8)
-    ax.text(0.97, 0.05, f"r = {r_val:.2f}, p = {p_val:.3f}",
-            transform=ax.transAxes, ha="right", va="bottom", fontsize=8,
-            color="#444444")
+    ax.axhline(0, color="#aaaaaa", linewidth=0.6, linestyle="--")
 
-plt.suptitle("Top Behavioral Predictor vs Age-Corrected BAG\n(4 Highest R² Regions)",
+    # Significance flag from summary
+    region_row = summary[summary["Region"] == region].iloc[0]
+    sig_flag = ""
+    if region_row["Bonferroni_significant"]:
+        sig_flag = " *Bonf"
+    elif region_row["FDR_significant"]:
+        sig_flag = " *FDR"
+
+    direction = "↑" if coef_val > 0 else "↓"
+    ax.set_title(f"{SHORT_LABELS[region]}{sig_flag}\n"
+                 f"{top_pred}  ({direction} BAG)",
+                 fontsize=8.5, pad=5)
+    ax.set_xlabel(top_pred, fontsize=7.5)
+    ax.set_ylabel("Age-corrected BAG (yrs)", fontsize=7.5)
+
+    p_str = f"p = {p_val:.3f}" if p_val >= 0.001 else f"p < 0.001"
+    ax.text(0.97, 0.05, f"r = {r_val:.2f}, {p_str}",
+            transform=ax.transAxes, ha="right", va="bottom",
+            fontsize=7.5, color="#333333")
+
+# Hide any unused subplots (if n_regions < n_rows*n_cols)
+for ax in axes[len(REGION_ORDER):]:
+    ax.set_visible(False)
+
+plt.suptitle("Top Behavioral Predictor vs Age-Corrected BAG — All Regions\n"
+             "(*Bonf = survives Bonferroni; *FDR = survives FDR correction)",
              fontsize=11, y=1.01)
 plt.tight_layout()
 fig.savefig(os.path.join(OUT_DIR, "Fig5_TopPredictor_Scatter.pdf"),
