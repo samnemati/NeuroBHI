@@ -375,8 +375,22 @@ for region in REGION_ORDER:
                               squeeze=False)
     axes_flat = axes.flatten()
 
+    # Pre-compute standardized β for each predictor in this region:
+    #   β_std = b * (SD_x / SD_y)  — how many SDs the outcome shifts per 1 SD
+    #   change in the predictor, holding all other predictors constant.
+    #   SD_x and SD_y are computed on the analysis sample (listwise-deleted).
+    analysis_cols = [p for p in all_preds_in_region if p in df_scatter.columns]
+    analysis_df   = df_scatter[analysis_cols + [region]].copy()
+    for col in analysis_cols:
+        analysis_df[col] = pd.to_numeric(analysis_df[col], errors="coerce")
+    analysis_df = analysis_df.dropna()
+
+    sd_y = analysis_df[region].std()
+
     for ax, pred in zip(axes_flat, all_preds_in_region):
+        # Retrieve stepwise model stats for this predictor
         coef_val = coef_data[region].loc[pred, "Coefficient"]
+        p_model  = coef_data[region].loc[pred, "p_value"]     # from stepwise OLS
 
         if pred not in df_scatter.columns:
             ax.text(0.5, 0.5, f"Not in data:\n{pred}",
@@ -397,25 +411,33 @@ for region in REGION_ORDER:
 
         x = plot_df[pred].values
         y = plot_df[region].values
-        r_val, p_val = stats.pearsonr(x, y)
+
+        # Standardized beta: b * SD(x) / SD(y)
+        sd_x   = analysis_df[pred].std() if pred in analysis_df.columns else np.nan
+        beta_std = coef_val * sd_x / sd_y if (sd_y > 0 and not np.isnan(sd_x)) else np.nan
 
         ax.scatter(x, y, s=16, alpha=0.4, color=hemi_color, linewidths=0)
 
-        # Regression line
-        m, b = np.polyfit(x, y, 1)
+        # Partial regression line using the model coefficient (not bivariate OLS)
         x_line = np.linspace(x.min(), x.max(), 100)
-        ax.plot(x_line, m * x_line + b, color="#222222", linewidth=1.5)
+        # For visualization, center x and draw the partial slope through (mean_x, mean_y)
+        mean_x = np.mean(x)
+        mean_y = np.mean(y)
+        ax.plot(x_line, mean_y + coef_val * (x_line - mean_x),
+                color="#222222", linewidth=1.5)
         ax.axhline(0, color="#cccccc", linewidth=0.6, linestyle="--")
 
         direction = "↑ BAG" if coef_val > 0 else "↓ BAG"
         ax.set_title(f"{pred}\n({direction})", fontsize=8, pad=4)
         ax.set_xlabel(pred, fontsize=7.5)
-        ax.set_ylabel("Age-corrected BAG (yrs)", fontsize=7.5)
+        ax.set_ylabel("BAG residual after age removal (yrs)", fontsize=7.5)
 
-        p_str = f"p = {p_val:.3f}" if p_val >= 0.001 else "p < 0.001"
-        ax.text(0.97, 0.05, f"r = {r_val:.2f}, {p_str}",
+        # Report standardized β and model p-value (from stepwise regression)
+        beta_str = f"β = {beta_std:.2f}" if not np.isnan(beta_std) else ""
+        p_str    = f"p = {p_model:.3f}" if p_model >= 0.001 else "p < 0.001"
+        ax.text(0.97, 0.05, f"{beta_str},  {p_str}\n(partial regression)",
                 transform=ax.transAxes, ha="right", va="bottom",
-                fontsize=7.5, color="#333333")
+                fontsize=7, color="#333333")
 
     # Hide unused panels
     for ax in axes_flat[n_preds:]:
