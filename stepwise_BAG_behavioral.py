@@ -23,9 +23,28 @@ Rationale:
     left? The R² reported here reflects only behavioral variance, making
     results interpretable and comparable across regions.
 
+Multiple Comparisons Correction:
+    Two corrections are applied to the Stage 2 F-test p-values across the
+    N_REGIONS region models, following Busby et al. (2024):
+
+    1. Bonferroni: corrected threshold = α / N_REGIONS  (0.05 / 12 = 0.0042)
+       Conservative; controls family-wise error rate (FWER).
+       Busby et al. used this approach for their regional comparisons.
+
+    2. FDR (Benjamini-Hochberg): adjusts p-values to control the false
+       discovery rate at 5%. Less conservative than Bonferroni; appropriate
+       when region tests are correlated (as brain regions typically are).
+
+    Both are applied to the overall model F-test p-value (does this region's
+    behavioral model explain significant variance?). Individual predictor
+    p-values within each model are reported as exploratory only — stepwise
+    selection already used p-values to choose predictors, so treating those
+    same p-values as confirmatory tests would be circular.
+
 Output Excel sheets:
-    Summary                  – one row per region (R², Adj-R², F, selected vars,
-                               plus Stage 1 Age-model R² for reference)
+    Summary                  – one row per region; includes raw F p-value,
+                               Bonferroni-corrected threshold, FDR-adjusted
+                               p-value, and significance flags for both methods
     <Region>                 – full coefficient table for Stage 2 final model
     Age_Corrected_Residuals  – Stage 1 residuals (age-partialled BAG), used as
                                outcome in Stage 2
@@ -35,6 +54,7 @@ Output Excel sheets:
 import pandas as pd
 import numpy as np
 import statsmodels.api as sm
+from statsmodels.stats.multitest import multipletests
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -196,14 +216,55 @@ for region in regions:
         "Selected_predictors":       "; ".join(selected) if selected else "None",
     })
 
-# ── 7. Write results to Excel ─────────────────────────────────────────────────
+# ── 7. Multiple comparisons correction across regions ─────────────────────────
+summary_df = pd.DataFrame(summary_rows)
+n_regions   = len(regions)
+alpha       = 0.05
+
+# Extract raw F-test p-values; regions with no selected predictors have "n/a"
+raw_pvals = pd.to_numeric(summary_df["Stage2_F_p_value"], errors="coerce")
+has_model = raw_pvals.notna()   # False for regions where no predictors were selected
+
+# ── Bonferroni (Busby et al. approach) ───────────────────────────────────────
+bonf_threshold = alpha / n_regions
+summary_df["Bonferroni_threshold"]    = bonf_threshold
+summary_df["Bonferroni_significant"]  = has_model & (raw_pvals < bonf_threshold)
+
+# ── FDR — Benjamini-Hochberg ─────────────────────────────────────────────────
+# Run only on regions that have a model (non-NaN p-value)
+fdr_adjusted = np.full(n_regions, np.nan)
+if has_model.any():
+    _, pvals_corrected, _, _ = multipletests(
+        raw_pvals[has_model], alpha=alpha, method="fdr_bh"
+    )
+    fdr_adjusted[has_model.values] = pvals_corrected
+
+summary_df["FDR_adjusted_p"]      = fdr_adjusted.round(6)
+summary_df["FDR_significant"]     = ~np.isnan(fdr_adjusted) & (fdr_adjusted < alpha)
+
+# ── Print correction summary ──────────────────────────────────────────────────
+print(f"\n{'─'*60}")
+print(f"Multiple comparisons correction (N regions = {n_regions}, α = {alpha})")
+print(f"  Bonferroni threshold : {bonf_threshold:.4f}  "
+      f"({summary_df['Bonferroni_significant'].sum()} regions survive)")
+print(f"  FDR (BH) α = {alpha}    "
+      f"({summary_df['FDR_significant'].sum()} regions survive)")
+print(f"\n  {'Region':<28} {'Raw p':>10} {'FDR p':>10} {'Bonf.sig':>10} {'FDR sig':>10}")
+for _, row in summary_df.iterrows():
+    raw_p = row["Stage2_F_p_value"]
+    fdr_p = f"{row['FDR_adjusted_p']:.4f}" if not np.isnan(row["FDR_adjusted_p"]) else "n/a"
+    bonf  = "YES" if row["Bonferroni_significant"] else "no"
+    fdr   = "YES" if row["FDR_significant"]        else "no"
+    print(f"  {row['Region']:<28} {str(raw_p):>10} {fdr_p:>10} {bonf:>10} {fdr:>10}")
+
+# ── 8. Write results to Excel ─────────────────────────────────────────────────
 print(f"\n{'─'*60}")
 print(f"Writing results to {OUTPUT_FILE} ...")
 
 with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
 
-    # Summary sheet
-    summary_df = pd.DataFrame(summary_rows)
+    # Summary sheet — includes raw F p-value, Bonferroni threshold + flag,
+    # FDR-adjusted p-value + flag
     summary_df.to_excel(writer, sheet_name="Summary", index=False)
 
     # Per-region Stage 2 coefficient sheets
@@ -214,12 +275,12 @@ with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
     # Stage 1 residuals (age-partialled BAG) — the outcome fed into Stage 2
     age_resid_df.to_excel(writer, sheet_name="Age_Corrected_Residuals", index=False)
 
-    # Stage 2 residuals (what behavioral predictors could not explain)
+    # Stage 2 residuals (unexplained after age + behavioral predictors)
     stage2_resid_df.to_excel(writer, sheet_name="Stage2_Model_Residuals", index=False)
 
     # Auto-fit column widths
-    for sheet_name in writer.sheets:
-        ws = writer.sheets[sheet_name]
+    for sname in writer.sheets:
+        ws = writer.sheets[sname]
         for col in ws.columns:
             max_len = max(
                 (len(str(cell.value)) if cell.value is not None else 0)
