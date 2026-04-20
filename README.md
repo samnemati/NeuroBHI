@@ -1,12 +1,12 @@
 # NeuroBHI
 
-A pipeline for computing regional Brain Age Gaps (BAGs) from volBrain regional volumes and evaluating their association with behavioral measures via stepwise regression.
+A pipeline for computing regional Brain Age Gaps (BAGs) from volBrain regional volumes, evaluating their association with behavioral measures, and testing whether behavior can predict regional BAG out-of-sample.
 
 ---
 
 ## Overview
 
-The pipeline consists of three scripts that run sequentially:
+The pipeline consists of four scripts that run sequentially:
 
 ```
 volBrain regional volumes (Excel)
@@ -28,14 +28,18 @@ volBrain regional volumes (Excel)
             │  Aggregate ROIs into anatomical / functional groups
             │  Compute simple mean + volume-weighted mean BAG per group
             ▼
- Regional_BAGs_weighted_v2.xlsx
+ Results/BHI_Regional_BrainAgeGap.xlsx
             │
-            ▼
- [Python] stepwise_BAG_behavioral.py
-            │  Merge regional BAGs with behavioral scores
-            │  Bidirectional stepwise OLS per region (Age fixed)
-            ▼
- Stepwise_BAG_Behavioral_Results.xlsx
+            ├────────────────────────────────────────────┐
+            ▼                                            ▼
+ [Python] stepwise_BAG_behavioral.py     [Python] BHI_regional_predictive_models.py
+            │  Two-stage stepwise:                       │  Ridge 10-fold CV per region:
+            │  Stage 1 regresses out Age                 │  Model A: behavior → regional BAG
+            │  Stage 2 selects behavioral predictors     │  Model B: global BAG → regional BAG
+            │  FDR + Bonferroni across 12 regions        │  Paired ΔR² specificity test
+            ▼                                            ▼
+ Stepwise_BAG_Behavioral_Results.xlsx    Results/BHI_Regional_Predictive_Models.xlsx
+                                         Figures/BHI_Regional_Fig1–3.pdf
 ```
 
 ---
@@ -227,6 +231,101 @@ Ensure both input Excel files are in the same directory, or update the file path
 
 ---
 
+## Script 4 — `BHI_regional_predictive_models.py` (Python)
+
+### What it does
+
+Quantifies how well behavioral measures can **predict** MRI-derived regional BAG out-of-sample, and tests whether behavior carries **region-specific** information beyond what global brain aging already conveys. Where Script 3 asks "which behaviors *associate* with which regions," Script 4 asks "*how accurately* can we reproduce each region's BAG from behavior alone, and does it beat a global-BAG baseline?"
+
+### Design: two paired models per region
+
+For each of 12 regional BAGs, two 10-fold cross-validated ridge regressions are fit on **identical fold splits**, enabling paired per-fold comparison:
+
+| Model | Features → Target |
+|---|---|
+| **Model A (behavior)** | 187 behavioral features → age-residualized regional BAG |
+| **Model B (baseline)** | age-residualized global BAG → age-residualized regional BAG |
+
+Targets are age-residualized via Stage-1 OLS (matching Script 3), so R² reflects the purely non-age variance.
+
+### Interpretation of the paired comparison
+
+- **Model A > Model B significantly** → behavior carries region-specific information beyond global brain aging
+- **Model A ≈ Model B** → behavior only proxies global aging; no regional specificity
+- **Both near 0** → this region is not behaviorally predictable at all
+
+### Modeling details
+
+| Component | Choice |
+|---|---|
+| Estimator | `StandardScaler` → `RidgeCV` (α ∈ {0.01, 0.1, 1, 10, 10², 10³, 10⁴, 10⁵}) |
+| α selection | Inner LOOCV on each training fold (prevents leakage) |
+| CV | 10-fold, `random_state = 42`, same splits for A and B |
+| Metrics per fold | R², RMSE, MAE, Pearson r (out-of-fold) |
+
+### Multiple comparisons (across 12 regions)
+
+Both corrections applied via paired one-sample t-tests on per-fold values:
+
+1. **Model A R² vs 0** — does behavior predict regional BAG at all?
+2. **ΔR² = R²_A − R²_B vs 0** — does behavior beat the global-BAG baseline?
+
+p-values adjusted with **FDR (Benjamini-Hochberg)** and compared against **Bonferroni threshold (0.05 / 12 = 0.0042)**.
+
+### Inputs
+
+| File | Description |
+|---|---|
+| `Results/BHI_Regional_BrainAgeGap.xlsx` | Regional BAG table: `subject_ID`, `Age`, `BrainAgeR_Global`, 12 regional BAG columns |
+| `Behavioral_Data_Cleaned.xlsx` | Behavioral scores; merged on `subject_ID`; listwise deletion applied |
+
+### Outputs
+
+`Results/BHI_Regional_Predictive_Models.xlsx`:
+
+| Sheet | Contents |
+|---|---|
+| `Summary` | One row per region: mean ± SD of R²/RMSE/MAE/corr for Models A and B; ΔR² |
+| `Specificity_Test` | Paired t-tests (Model A vs 0; ΔR² vs 0) with FDR-adjusted p and Bonferroni flag |
+| `FeatureImportance` | Wide matrix — standardized ridge coefficients × region (Model A, full-data refit) |
+| `FoldMetrics_A` / `FoldMetrics_B` | Per-fold per-region metrics (10 × 12 rows each) |
+| `Predictions_A` / `Predictions_B` | Subject-level out-of-fold predictions vs actual |
+
+Figures (in `Figures/`):
+
+| File | Contents |
+|---|---|
+| `BHI_Regional_Fig1_ModelAvsB_R2.pdf` | Paired R² bars per region; `*` marks FDR-significant ΔR² |
+| `BHI_Regional_Fig2_FeatureHeatmap.pdf` | Top 20 features × 12 regions, coefficient sign/magnitude |
+| `BHI_Regional_Fig3_Scatter.pdf` | Model A actual vs predicted scatter, one panel per region |
+
+### Requirements
+
+```
+pandas
+numpy
+scipy
+scikit-learn
+statsmodels
+matplotlib
+seaborn
+openpyxl
+```
+
+```bash
+pip install pandas numpy scipy scikit-learn statsmodels matplotlib seaborn openpyxl
+```
+
+### Usage
+
+```bash
+python BHI_regional_predictive_models.py
+```
+
+Run from the project root so relative paths to `Results/` and `Figures/` resolve correctly. The console prints a per-region summary table (α selected, R² for A and B, ΔR², corrected p-values).
+
+---
+
 ## Repository structure
 
 ```
@@ -234,6 +333,10 @@ NeuroBHI/
 ├── BHI_ROI_brainage_calculation_from_ROIVol.m   # MATLAB: volBrain volumes → per-ROI brain age & BAG
 ├── BHI_compute_regionalBAG_from_roiBAG.m        # MATLAB: per-ROI BAGs → weighted regional BAGs
 ├── stepwise_BAG_behavioral.py                   # Python: regional BAGs → behavioral associations
+├── BHI_regional_predictive_models.py            # Python: behavior → regional BAG out-of-sample prediction
+├── visualize_BAG_results.py                     # Python: figures for Script 3 outputs
+├── Results/                                     # Excel outputs (BAG tables, model results)
+├── Figures/                                     # PDF figures
 └── README.md
 ```
 
