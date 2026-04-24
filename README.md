@@ -2,6 +2,8 @@
 
 A pipeline for computing regional Brain Age Gaps (BAGs) from volBrain regional volumes, evaluating their association with behavioral measures, and testing whether behavior can predict regional BAG out-of-sample.
 
+A companion data-prep script (Script 5) extracts BAG-relevant items from the ABC comprehensive health questionnaire and produces an analysis-ready quantitative table to feed into Scripts 3 and 4.
+
 ---
 
 ## Overview
@@ -326,6 +328,89 @@ Run from the project root so relative paths to `Results/` and `Figures/` resolve
 
 ---
 
+## Script 5 — `BHI_extract_questionnaire.py` (Python)
+
+### What it does
+
+Extracts BAG-relevant items from the ABC comprehensive health questionnaire and produces a single analysis-ready workbook. The source file is a REDCap export with a two-row header (category on row 0, question text on row 1), 345 subjects, and 518 columns spanning 14 instruments. This script selects the columns worth keeping, drops free-text and out-of-scope instruments, and encodes every remaining column numerically with rules that are documented inside the output file.
+
+### Sections kept vs dropped
+
+| Kept | Dropped |
+|---|---|
+| Health & Physical Activity (Rand26, ABC balance scale, IPAQ) | Reading History (childhood-only items) |
+| Alcohol Use | Lifetime Discrimination block — duplicate of Food Security in source |
+| COMPASS-31 autonomic symptoms | COVID-19 treatment detail (symptom checkboxes kept) |
+| Dietary Screening | Free-text job titles, industries, years-at-job, |
+| Food Security | cereal/milk brands, contact initials, |
+| Participant Health History (Myself + Family pairs) | PTSD/PSQI "please describe" fields |
+| Pearlin Mastery Scale | |
+| Periodontal screening | |
+| Pittsburgh Sleep Quality Index | |
+| PTSD Checklist DSM-5 (PCL-5) | |
+| Social Relationship (group participation + person-knowledge flags) | |
+| COVID-19 symptom flags (incl. Brain Fog) + positive-test flag | |
+
+### Encoding conventions
+
+| Source pattern | Quantitative encoding |
+|---|---|
+| Yes / No | 1 / 0 (blank → NaN) |
+| Checked / Unchecked | 1 / 0 |
+| Ordinal Likert | integer scale (see `Scales` sheet in output) |
+| Multi-choice single-select | one-hot columns `<base>__<slug>` |
+| Continuous numeric | float (strips `%` and whitespace) |
+| Free text | dropped |
+| `Don't Know`, `Refused`, `Prefer not to answer`, `Can't choose`, REDCap placeholders | NaN |
+
+Notable scales: `HANDEDNESS_5` (-2..+2), `EDUCATION_5` (1..5), `INCOME_7` (1..7), `NOT_AT_ALL_5` (PCL-5, 0..4), `STRONG_DIS_4` (Pearlin, 1..4; items 4 and 6 positively worded — reverse before summing), `LIKERT_FREQ_4` (PSQI, 0..3), `PSQI_PROBLEM_4`, `PSQI_QUALITY_4`, `CHANGE_6_ALT` (0 = never had the symptom … 6 = much worse — unified positive ordinal so regression coefficients stay interpretable). The full mapping for every scale is written into the output workbook.
+
+### Inputs
+
+| File | Description |
+|---|---|
+| `Doc/ABC_ComprehensiveQuestionnaire.xlsx` | REDCap export; expects `Study ID` in column 0, category row in row 0, question text in row 1, data from row 2 onward |
+
+### Outputs
+
+`Results/BHI_Questionnaire_Extracted.xlsx` — 5 sheets, all generated in a single run:
+
+| Sheet | Contents |
+|---|---|
+| `Raw_Selected` | 345 × 336 — original text/number values for selected columns, keyed by `Study_ID` |
+| `Quantitative` | 345 × 354 — numerically encoded version suitable for modeling |
+| `Encoding_Rules` | 336 rows — for each source column: source index, section, quant name, action, scale name, original question text |
+| `Scales` | 154 rows — every ordinal scale with its raw → encoded mapping, plus the Yes/No and Checked/Unchecked rules, plus the full list of missing-value tokens mapped to NaN |
+| `ReadMe` | Plain-English summary: sections kept vs dropped, encoding conventions, notable scale choices, data quirks |
+
+### Data quirks
+
+- Source has 345 subjects; `BHI_Regional_BrainAgeGap.xlsx` has 304. **Inner-join on `Study_ID`** before running association or prediction analyses.
+- Cols 158–171 in the source are labelled "Lifetime discrimination" but contain an exact duplicate of the Food Security block (cols 144–157). Dropped to avoid double-counting.
+- A handful of COMPASS "times per month" cells contain Excel-auto-dated strings like `"4-Mar"` (originally `"3-4"`) — left as NaN. The four garbled times-per-month follow-up columns (raw indices 101, 105, 107, 109) are dropped entirely.
+
+### Requirements
+
+```
+pandas
+numpy
+openpyxl
+```
+
+```bash
+pip install pandas numpy openpyxl
+```
+
+### Usage
+
+```bash
+python BHI_extract_questionnaire.py
+```
+
+Run from the project root so `Doc/` and `Results/` resolve. The encoding rules live inside the script (plus are mirrored into the output workbook), so re-running after a source-file update regenerates both the data and the reference sheets in sync.
+
+---
+
 ## Repository structure
 
 ```
@@ -334,8 +419,10 @@ NeuroBHI/
 ├── BHI_compute_regionalBAG_from_roiBAG.m        # MATLAB: per-ROI BAGs → weighted regional BAGs
 ├── stepwise_BAG_behavioral.py                   # Python: regional BAGs → behavioral associations
 ├── BHI_regional_predictive_models.py            # Python: behavior → regional BAG out-of-sample prediction
+├── BHI_extract_questionnaire.py                 # Python: ABC questionnaire → quantitative BAG-relevant features
 ├── visualize_BAG_results.py                     # Python: figures for Script 3 outputs
-├── Results/                                     # Excel outputs (BAG tables, model results)
+├── Doc/                                         # Source questionnaire, reference PDFs, meeting notes
+├── Results/                                     # Excel outputs (BAG tables, model results, questionnaire extract)
 ├── Figures/                                     # PDF figures
 └── README.md
 ```
