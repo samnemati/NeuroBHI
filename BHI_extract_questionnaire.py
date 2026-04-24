@@ -713,6 +713,31 @@ def main():
 
     quant_df = pd.concat(quant_parts, axis=1)
 
+    # --- Derived summary scores: PCL-5 (PTSD Checklist for DSM-5) ---
+    # Each item is 0 (Not at all) .. 4 (Extremely).
+    # Cluster mapping per DSM-5 / PCL-5 scoring manual:
+    #   B Intrusion         -> Q1..Q5   (range 0..20)
+    #   C Avoidance         -> Q6..Q7   (range 0..8)
+    #   D Negative cog/mood -> Q8..Q14  (range 0..28)
+    #   E Arousal/reactivity-> Q15..Q20 (range 0..24)
+    # Total = sum of all 20 items (range 0..80).
+    # Using skipna=False so a missing item yields NaN for the sum (no partial
+    # scoring), matching standard PCL-5 practice.
+    def _pcl(cols):
+        return quant_df[cols].sum(axis=1, skipna=False)
+
+    b_items = [f'PTSD_Q{i}' for i in range(1, 6)]
+    c_items = [f'PTSD_Q{i}' for i in range(6, 8)]
+    d_items = [f'PTSD_Q{i}' for i in range(8, 15)]
+    e_items = [f'PTSD_Q{i}' for i in range(15, 21)]
+    all_items = b_items + c_items + d_items + e_items
+
+    quant_df['PCL5_B_Intrusion']  = _pcl(b_items)
+    quant_df['PCL5_C_Avoidance']  = _pcl(c_items)
+    quant_df['PCL5_D_NegCogMood'] = _pcl(d_items)
+    quant_df['PCL5_E_Arousal']    = _pcl(e_items)
+    quant_df['PCL5_Total']        = _pcl(all_items)
+
     # --- Encoding_Rules sheet: one row per source column kept ---
     section_ranges = [
         (0, 0, 'StudyID'),
@@ -840,21 +865,238 @@ def main():
     ]
     readme_df = pd.DataFrame({'Notes': readme_lines})
 
+    # --- DataAvailability sheet ---
+    #
+    # For every column in the Quantitative sheet:
+    #   - N_valid:          subjects with a non-null value (out of 345)
+    #   - N_valid_with_BAG: subjects that are also present in Results/BHI_Regional_BrainAgeGap.xlsx
+    #                       (intersection with the BAG analysis sample, N=304)
+    #   - Pct_of_BAG_N:     100 * N_valid_with_BAG / (size of BAG sample)
+    #   - Priority:         High / Medium / Low / Reference
+    #   - Reason:           why the variable is plausibly (ir)relevant to BAG
+    #
+    # Priority tiers are chosen based on published brain-aging literature and
+    # are a prioritisation guide, not a hard filter. Re-inspect for your
+    # sample if any of the low-N items are central to a specific hypothesis.
+
+    bag_path = 'Results/BHI_Regional_BrainAgeGap.xlsx'
+    try:
+        bag_df = pd.read_excel(bag_path)
+        bag_ids = set(bag_df['subject_ID'].dropna().astype(str))
+    except Exception:
+        bag_df = None
+        bag_ids = set()
+    bag_n = max(len(bag_ids), 1)
+
+    # Map a quant-sheet column name to a section tag (based on prefix).
+    # Used only inside this sheet; independent of the Encoding_Rules sheet
+    # which keys off source column index.
+    def section_of_name(col):
+        if col == 'Study_ID':
+            return 'ID'
+        for prefix, sec in [
+            ('Rand26_', 'HealthActivity'),
+            ('ABC_', 'HealthActivity'),
+            ('IPAQ_', 'HealthActivity'),
+            ('Alc_', 'Alcohol'),
+            ('COMPASS_', 'COMPASS31'),
+            ('Diet_', 'Diet'),
+            ('FoodSec_', 'FoodSecurity'),
+            ('Hand_', 'HealthHistory'),
+            ('Employment_Status', 'HealthHistory'),
+            ('HealthHist__', 'HealthHistory'),
+            ('Pearlin_', 'PearlinMastery'),
+            ('Perio_', 'Periodontal'),
+            ('PSQI_', 'PSQI'),
+            ('PTSD_', 'PTSD'),
+            ('PCL5_', 'PTSD'),
+            ('Social_', 'SocialRelationship'),
+            ('COVID_', 'COVID19'),
+        ]:
+            if col.startswith(prefix):
+                return sec
+        if col in {'Education', 'Income_Personal', 'Income_Household',
+                   'Adults_in_Household', 'Children_in_Household'}:
+            return 'HealthHistory'
+        return 'Other'
+
+    HIGH_EXACT = {
+        'Education', 'Income_Personal', 'Income_Household',
+        'Rand26_GeneralHealth', 'Rand26_PhysicalFunctioning',
+        'PSQI_TotalScore', 'PSQI_Q4_SleepHours', 'PSQI_Q9_QualityRating',
+        'COVID_Sym_BrainFog', 'ABC_Total', 'ABC_PctSelfConfidence',
+        'Alc_DrankPast30d_YN', 'Alc_DaysPerWeek', 'Alc_DaysPast30',
+        'Alc_AvgDrinksPerDay', 'Alc_BingeOccasions', 'Alc_MaxDrinksOcc',
+        'IPAQ_vigorous_days', 'IPAQ_moderate_days', 'IPAQ_walk_days',
+        'IPAQ_sit_weekday_hours', 'IPAQ_sit_weekend_hours',
+        'PCL5_Total', 'PCL5_B_Intrusion', 'PCL5_C_Avoidance',
+        'PCL5_D_NegCogMood', 'PCL5_E_Arousal',
+    }
+    MEDIUM_EXACT = {
+        'Rand26_Pain', 'Rand26_SocialFunctioning', 'Rand26_EmotionalWellBeing',
+        'Rand26_EnergyFatigue', 'Rand26_RoleLimit_Emotional',
+        'Rand26_RoleLimit_Physical',
+        'Hand_Writing', 'Hand_Throwing', 'Hand_Toothbrush', 'Hand_Spoon',
+        'Adults_in_Household', 'Children_in_Household',
+        'Pearlin_Total', 'Social_TrustPeople',
+        'COVID_EverTestedPositive_YN', 'COVID_ThoughtHadIt_YN',
+        'PTSD_EventDeathInjury_YN',
+        'PSQI_Q2_SleepLatencyMin', 'PSQI_Q5j_otherFreq', 'PSQI_Q10e_otherFreq',
+    }
+    HIGH_HEALTHHIST_SELF = {
+        'High_blood_pressure', 'High_Cholesterol', 'Hyperlipidemia',
+        'Diabetes_mellitus_Type_2_diabetes', 'Gestational_diabetes_diabetes_during',
+        'Myocardial_infarction', 'Stroke', 'Transient_ischemic_attack_TIA_or_mini',
+        'Congestive_Heart_Failure', 'Peripheral_vascular_disease',
+        'Blocked_blood_vessels', 'Irregular_heart_rhythm',
+        'Depression', 'Dementia_Chronic_cognitive_deficit',
+        'Epilepsy_or_seizures',
+    }
+
+    def classify(col):
+        if col == 'Study_ID':
+            return 'Reference', 'Subject identifier (join key)'
+        if col in HIGH_EXACT:
+            return 'High', 'Direct brain-aging predictor in published literature'
+        if col in MEDIUM_EXACT:
+            return 'Medium', 'Plausible contributor'
+        # Rand26 already handled
+        # ABC items per-item (except Total, PctSelfConfidence already High)
+        if col.startswith('ABC_') and col not in HIGH_EXACT:
+            return 'Low', 'Per-item balance confidence; subsumed by ABC_Total'
+        # IPAQ minutes/hours - subsumed by days; but sit_*_hours is high
+        if col.startswith('IPAQ_') and col not in HIGH_EXACT:
+            return 'Low', 'Fine-grained IPAQ sub-item; subsumed by days/sit-hours'
+        # Alcohol already handled all
+        # Employment onehot
+        if col.startswith('Employment_Status__'):
+            # retired is most relevant; other categories capture SES/activity
+            if 'Retired' in col or 'Working_full_time' in col:
+                return 'Medium', 'Retirement/employment status (activity, SES)'
+            return 'Low', 'Rare employment category'
+        # Handedness already Medium
+        # Diet items
+        if col.startswith('Diet_'):
+            cardiometabolic = {'Diet_RedMeat', 'Diet_ProcessedMeat',
+                               'Diet_FriedPotato', 'Diet_Soda',
+                               'Diet_SweetDrinks', 'Diet_WholeGrains',
+                               'Diet_WholeGrainBread', 'Diet_Fruit',
+                               'Diet_GreenSalad', 'Diet_OtherVeg'}
+            if col in cardiometabolic:
+                return 'Medium', 'Cardiometabolic-relevant food-frequency item'
+            return 'Low', 'Specific food-frequency item (noisy, weak BAG signal)'
+        # Food security
+        if col.startswith('FoodSec_'):
+            return 'Low', 'Food insecurity (largely captured by Income_*); keep a summary if relevant'
+        # Health History
+        if col.startswith('HealthHist__'):
+            # parse suffix
+            if col.endswith('__family'):
+                return 'Low', 'Family history — indirect (genetic) BAG predictor'
+            if col.endswith('__self'):
+                stem = col[len('HealthHist__'):-len('__self')]
+                if stem in HIGH_HEALTHHIST_SELF:
+                    return 'High', 'Vascular / metabolic / neuropsych condition (self) — direct BAG predictor'
+                # Other self conditions: medium
+                low_cond = {'Alcoholism', 'Allergies_hay_fever', 'Asthma',
+                            'Connective_tissue_disease', 'Peptic_ulcer_disease',
+                            'GERD_Reflux', 'Heart_murmur', 'Hepatitis',
+                            'Glaucoma', 'AIDS_Autoimmune_Deficiency_Syndrome',
+                            'HIV_Human_Immunodeficiency_Syndrome',
+                            'Colitis', 'Kidney_stone', 'Kidney_infections',
+                            'Other_thyroid_disease', 'Hyperthyroidism',
+                            'Hypothyroidism', 'Blood_transfusions',
+                            'Cirrhosis_or_liver_disease', 'Liver_disease',
+                            'Solid_tumor', 'Cancer', 'Leukemia', 'Lymphoma',
+                            'COPD_or_emphysema', 'Hemiplegia',
+                            'Moderate_to_severe_chronic_kidney_disease',
+                            'Gastrointestinal_disease', 'Anemia'}
+                if stem in low_cond:
+                    return 'Medium', 'Other self-reported condition (inflammation / metabolic / general health)'
+                # handedness items already captured; anything else
+                return 'Medium', 'Self-reported health-history item'
+            # Height/weight/BMI etc
+            if any(k in col for k in ['Height', 'Weight', 'BMI', 'Waist', 'Hip']):
+                return 'High', 'Anthropometric; body composition affects brain age'
+            return 'Low', 'Misc health-history sub-item'
+        # Pearlin items already Medium via Pearlin_Total; individual items:
+        if col.startswith('Pearlin_') and col not in MEDIUM_EXACT:
+            return 'Medium', 'Individual Pearlin mastery item; Pearlin_Total is the main score'
+        # Periodontal
+        if col.startswith('Perio_'):
+            return 'Medium', 'Periodontal disease (systemic inflammation proxy)'
+        # PSQI sub-items
+        if col.startswith('PSQI_'):
+            return 'Medium', 'PSQI sub-item; PSQI_TotalScore is the main summary'
+        # PTSD items
+        if col.startswith('PTSD_'):
+            if col in MEDIUM_EXACT:
+                return 'Medium', 'PTSD screening item'
+            if col.startswith('PTSD_Q'):
+                return 'Medium', 'PCL-5 item; sum to a PTSD severity score for the main analysis'
+            return 'Low', 'PTSD qualitative/descriptor field'
+        # Social
+        if col.startswith('Social_'):
+            if 'knows' in col:
+                return 'Low', 'Social network density flag'
+            return 'Medium', 'Social / community participation — engagement proxy'
+        # COMPASS autonomic
+        if col.startswith('COMPASS_'):
+            if col.endswith('_YN'):
+                return 'Medium', 'COMPASS-31 symptom-gate (autonomic dysfunction)'
+            if col.endswith('_timesPerMonth'):
+                return 'Low', 'COMPASS follow-up count (sparse / garbled data)'
+            return 'Medium', 'COMPASS-31 severity / change item'
+        # COVID
+        if col.startswith('COVID_Sym_'):
+            return 'Medium', 'COVID-19 symptom flag'
+        if col.startswith('COVID_'):
+            return 'Low', 'COVID-19 auxiliary field'
+        # fallback
+        return 'Low', 'Unclassified — default low'
+
+    avail_rows = []
+    study_ids = quant_df['Study_ID'].astype(str) if 'Study_ID' in quant_df.columns else None
+    in_bag = study_ids.isin(bag_ids) if study_ids is not None else None
+    for col in quant_df.columns:
+        valid = quant_df[col].notna()
+        n_valid = int(valid.sum())
+        if in_bag is not None:
+            n_valid_bag = int((valid & in_bag).sum())
+        else:
+            n_valid_bag = 0
+        priority, reason = classify(col)
+        avail_rows.append({
+            'Column': col,
+            'Section': section_of_name(col),
+            'N_valid': n_valid,
+            'N_valid_with_BAG': n_valid_bag,
+            'Pct_of_BAG_N': round(100 * n_valid_bag / bag_n, 1),
+            'Priority': priority,
+            'Reason': reason,
+        })
+    avail_df = pd.DataFrame(avail_rows)
+
     # --- Write workbook ---
     import os
     os.makedirs('Results', exist_ok=True)
     with pd.ExcelWriter(DST, engine='openpyxl') as w:
-        raw_df.to_excel(w,     sheet_name='Raw_Selected',    index=False)
-        quant_df.to_excel(w,   sheet_name='Quantitative',    index=False)
-        rules_df.to_excel(w,   sheet_name='Encoding_Rules',  index=False)
-        scales_df.to_excel(w,  sheet_name='Scales',          index=False)
-        readme_df.to_excel(w,  sheet_name='ReadMe',          index=False)
+        raw_df.to_excel(w,     sheet_name='Raw_Selected',      index=False)
+        quant_df.to_excel(w,   sheet_name='Quantitative',      index=False)
+        avail_df.to_excel(w,   sheet_name='DataAvailability',  index=False)
+        rules_df.to_excel(w,   sheet_name='Encoding_Rules',    index=False)
+        scales_df.to_excel(w,  sheet_name='Scales',            index=False)
+        readme_df.to_excel(w,  sheet_name='ReadMe',            index=False)
 
     print(f'Wrote {DST}')
-    print(f'  Raw_Selected:   {raw_df.shape[0]} rows x {raw_df.shape[1]} cols')
-    print(f'  Quantitative:   {quant_df.shape[0]} rows x {quant_df.shape[1]} cols')
-    print(f'  Encoding_Rules: {rules_df.shape[0]} rows')
-    print(f'  Scales:         {scales_df.shape[0]} rows ({len(scales)} ordinal scales + yesno + missing tokens)')
+    print(f'  Raw_Selected:     {raw_df.shape[0]} rows x {raw_df.shape[1]} cols')
+    print(f'  Quantitative:     {quant_df.shape[0]} rows x {quant_df.shape[1]} cols')
+    print(f'  DataAvailability: {avail_df.shape[0]} rows (priority + N counts)')
+    print(f'  Encoding_Rules:   {rules_df.shape[0]} rows')
+    print(f'  Scales:           {scales_df.shape[0]} rows ({len(scales)} ordinal scales + yesno + missing tokens)')
+    tier = avail_df['Priority'].value_counts().to_dict()
+    print(f'  Priority tiers:   {tier}')
+    print(f'  BAG sample intersect: N={len(bag_ids)} (of 345 questionnaire subjects)')
 
 
 if __name__ == '__main__':
