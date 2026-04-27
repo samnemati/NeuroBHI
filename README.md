@@ -2,7 +2,9 @@
 
 A pipeline for computing regional Brain Age Gaps (BAGs) from volBrain regional volumes, evaluating their association with behavioral measures, and testing whether behavior can predict regional BAG out-of-sample.
 
-A companion data-prep script (Script 5) extracts BAG-relevant items from the ABC comprehensive health questionnaire and produces an analysis-ready quantitative table to feed into Scripts 3 and 4.
+Two companion data-prep scripts support the modeling pipeline:
+- **Script 5** extracts BAG-relevant items from the ABC comprehensive health questionnaire and produces an analysis-ready quantitative table to feed into Scripts 3 and 4.
+- **Script 6** aggregates the 8 RAND-26 subscales into the standard Physical and Mental Component Summary scores (PCS / MCS), replacing the highly skewed individual subscales with two well-distributed continuous predictors.
 
 ---
 
@@ -373,15 +375,25 @@ Notable scales: `HANDEDNESS_5` (-2..+2), `EDUCATION_5` (1..5), `INCOME_7` (1..7)
 
 ### Outputs
 
-`Results/BHI_Questionnaire_Extracted.xlsx` — 5 sheets, all generated in a single run:
+`Results/BHI_Questionnaire_Extracted.xlsx` — 6 sheets, all generated in a single run:
 
 | Sheet | Contents |
 |---|---|
 | `Raw_Selected` | 345 × 336 — original text/number values for selected columns, keyed by `Study_ID` |
 | `Quantitative` | 345 × 354 — numerically encoded version suitable for modeling |
+| `DataAvailability` | 354 rows — per column: `N_valid` (non-null out of 345), `N_valid_with_BAG` (intersection with the 304-subject BAG sample), `Pct_of_BAG_N`, `Priority` (High / Medium / Low / Reference), and a short `Reason`. Use this sheet to pick a short list of predictors and see coverage up front. |
 | `Encoding_Rules` | 336 rows — for each source column: source index, section, quant name, action, scale name, original question text |
 | `Scales` | 154 rows — every ordinal scale with its raw → encoded mapping, plus the Yes/No and Checked/Unchecked rules, plus the full list of missing-value tokens mapped to NaN |
 | `ReadMe` | Plain-English summary: sections kept vs dropped, encoding conventions, notable scale choices, data quirks |
+
+### Priority tiers (as assigned in DataAvailability)
+
+Tiers are a prioritisation guide based on published brain-aging literature — not a hard filter:
+
+- **High (35 cols)** — direct BAG predictors: education, income, cardio-metabolic / neurological self-conditions (hypertension, hyperlipidemia, diabetes, stroke, TIA, congestive heart failure, depression, dementia, etc.), sleep (PSQI total, hours, quality), physical activity (IPAQ days, sitting hours), alcohol use, self-rated general / physical health (Rand26), ABC balance, COVID brain-fog flag.
+- **Medium (176 cols)** — plausible contributors: other Rand26 subscales, handedness, other self-reported conditions, Pearlin Mastery, PSQI sub-items, PCL-5 items, periodontal items, cardiometabolic-relevant diet items, COMPASS-31 autonomic items, social / community engagement.
+- **Low (142 cols)** — weak or indirect: family-history conditions, specific food-frequency items, food-insecurity items (largely captured by income), per-item ABC components, IPAQ minutes (subsumed by days), PTSD qualitative descriptors, COVID treatment auxiliaries, rare employment categories.
+- **Reference (1)** — `Study_ID` (join key).
 
 ### Data quirks
 
@@ -411,6 +423,85 @@ Run from the project root so `Doc/` and `Results/` resolve. The encoding rules l
 
 ---
 
+## Script 6 — `BHI_compute_Rand26_components.py` (Python)
+
+### What it does
+
+Aggregates the 8 RAND-26 (SF-36-style) subscales into the two canonical summary scores used in health-outcomes research:
+
+- **Rand26_PCS** — Physical Component Summary
+- **Rand26_MCS** — Mental Component Summary
+
+The motivation is distributional: in this neurotypical sample, several individual mental subscales (notably `Rand26_RoleLim_Emotional` at ~84% ceiling and `Rand26_SocialFunctioning` at ~56% ceiling) behave as quasi-binary indicators with severe imbalance, producing unstable, outlier-driven coefficients in regression. Aggregating them into a single composite — together with the two well-distributed mental subscales (`EmotionalWellBeing`, `EnergyFatigue`) — dilutes the ceiling effect and yields a continuous predictor with > 200 unique values and < 3% mass at any single value. The same logic is applied symmetrically to the four physical subscales for PCS.
+
+### Method
+
+Hays simple summary approach (Hays & Morales, 2001, *Annals of Medicine* 33(5):350–357) — the standard RAND-recommended public-domain method:
+
+1. Detect whether each subscale is already z-scored (mean ≈ 0, SD ≈ 1 within tolerance); standardize within sample if not.
+2. Compute each component as the row-wise mean of its 4 z-scored subscales, allowing partial missingness (component returned if ≥ 2 of 4 subscales are present; else NaN).
+
+### Component composition
+
+| Component | Subscales averaged |
+|---|---|
+| **PCS** | `PhysicalFunctioning`, `RoleLim_Physical`, `Pain`, `GeneralHealth` |
+| **MCS** | `RoleLim_Emotional`, `EmotionalWellBeing`, `EnergyFatigue`, `SocialFunctioning` |
+
+### Inputs
+
+| File | Description |
+|---|---|
+| `Results/BHI_Behavioral_Plus_Questionnaire_Cleaned.xlsx` | Cleaned behavioral file containing all 8 `Rand26_*` subscale columns; merged on `subject_ID`. The script auto-handles the `RoleLim` ↔ `RoleLimit` naming variant. |
+
+### Outputs
+
+`Results/BHI_Rand26_Components.xlsx`:
+
+| Sheet | Contents |
+|---|---|
+| `Components` | `subject_ID`, `Rand26_PCS`, `Rand26_MCS` — the two columns to merge back into the behavioral file in place of the 8 subscales |
+| `Subscales_Used` | The 8 z-scored subscales fed into the aggregation, for reproducibility |
+| `Subscale_Diagnostics` | Per-subscale N, unique values, ceiling-effect %, mean/SD, and standardization status |
+| `Subscale_Correlations` | Pairwise Pearson r within each component (sanity check that subscales cohere) |
+| `Component_Summary` | Distributional summary of `PCS` and `MCS` (N, mean, SD, range, modal pile-up, quantiles) |
+| `ReadMe` | Method note, citation, and step-by-step instructions for integrating the components into the behavioral file |
+
+### Integration into the modeling pipeline
+
+After running this script:
+
+1. Drop the 8 `Rand26_*` subscale columns from the behavioral file used by Scripts 3 and 4.
+2. Merge `Rand26_PCS` and `Rand26_MCS` from `Results/BHI_Rand26_Components.xlsx` on `subject_ID`.
+3. Re-run Scripts 3 and 4. The two composite predictors slot in as standard continuous regressors and avoid the multicollinearity introduced by 8 highly inter-correlated subscales (typical pairwise r 0.4–0.6).
+
+### Configuration knobs
+
+- `MIN_SUBSCALES = 2` — minimum non-missing subscales required to compute a component score.
+- `ZSCORE_MEAN_TOL = 0.1`, `ZSCORE_STD_TOL = 0.1` — tolerance for the "already z-scored" detector.
+
+### Requirements
+
+```
+pandas
+numpy
+openpyxl
+```
+
+```bash
+pip install pandas numpy openpyxl
+```
+
+### Usage
+
+```bash
+python BHI_compute_Rand26_components.py
+```
+
+Run from the project root so the relative `Results/` path resolves.
+
+---
+
 ## Repository structure
 
 ```
@@ -420,6 +511,7 @@ NeuroBHI/
 ├── stepwise_BAG_behavioral.py                   # Python: regional BAGs → behavioral associations
 ├── BHI_regional_predictive_models.py            # Python: behavior → regional BAG out-of-sample prediction
 ├── BHI_extract_questionnaire.py                 # Python: ABC questionnaire → quantitative BAG-relevant features
+├── BHI_compute_Rand26_components.py             # Python: 8 Rand26 subscales → PCS + MCS composites
 ├── visualize_BAG_results.py                     # Python: figures for Script 3 outputs
 ├── Doc/                                         # Source questionnaire, reference PDFs, meeting notes
 ├── Results/                                     # Excel outputs (BAG tables, model results, questionnaire extract)
